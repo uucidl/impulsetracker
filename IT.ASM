@@ -128,7 +128,7 @@ StackSize       =       1000h
 
 No386Msg        DB      "Sorry, Impulse Tracker requires a 386+ processor to run."
                 DB      13, 10, "$"
-WindowsMsg      DB      "Microsoft Windows detected.", 13, 10, 10
+WindowsMsg      DB      "Microsoft Windows <95 detected.", 13, 10, 10
                 DB      "Due to instabilities in Windows, it is highly recommended that you run", 13, 10
                 DB      "Impulse Tracker in DOS instead.", 13, 10, 10
                 DB      "Press any key to continue..."
