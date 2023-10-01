@@ -161,7 +161,7 @@ ENDIF
 
 Label           CmdLineHelp Byte
 IF SHOWVERSION
-                DB      "Impulse Tracker 2.14, Copyright (C) 1995-2000 Jeffrey Lim", 13, 10
+                DB      "Impulse Tracker 2.17, Copyright (C) 1995-2000 Jeffrey Lim", 13, 10
                 DB      10
                 DB      "  Usage: IT.EXE [Switches]", 13, 10
 ELSE

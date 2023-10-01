@@ -467,7 +467,7 @@ Set5NumValues           Label   Word
 
 HeaderMsg1              Label   Byte
 IF SHOWVERSION
-                        DB      0FFh, 9, ' ', "Impulse Tracker v2.14 Copyright (C) 1995-2000 Jeffrey Lim", 13
+                        DB      0FFh, 9, ' ', "Impulse Tracker v2.17 Copyright (C) 1995-2000 Jeffrey Lim", 13
 ELSE
                         DB      0FFh, 12, ' ', "Impulse Tracker Copyright (C) 1995-2000 Jeffrey Lim", 13
 ENDIF
