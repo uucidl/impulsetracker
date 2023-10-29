@@ -1,0 +1,27 @@
+Impulse Tracker is written in Borland's Turbo Assembler and can be built with its version 4.0. However it is compiled with the compatibility flag /ut310 indicating that it's really targetting Turbo Assembler 3.10
+
+Impulse Tracker's main compilation variables are stored in @file{SWITCH.INC} which is included by all other source files.
+
+@section: @file{SWITCH.INC}
+
+This file contains various variables. Some of them use = and some of them use EQU.
+
+@quote{@src{TASMQR94}
+  = Ideal, MASM 
+  name = expression 
+  Defines or redefines a numeric equate.
+}
+
+@quote{@src{TASMQR94}
+  EQU Ideal, MASM 
+  name EQU expression 
+  Defines name to be a string, alias, or numeric equate containing the result 
+  of evaluating expression .
+}
+
+The only item using EQU defines a numeric variable, so it seems we could refactor it to use = instead.
+
+
+
+
+
