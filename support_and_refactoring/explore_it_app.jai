@@ -42,6 +42,12 @@ The guy who wrote protracker-clone and ft2-clone has a version of the replay cod
 
 */
 
+// @todo: logic to fetch comments after a parsable structure should consider fetching continuation lines of the form:
+// ```
+// symbol = value ; documentation
+//                ; continued on the next line
+// ```
+
 #import "Basic";
 #import "File";
 #import "File_Utilities";
@@ -55,20 +61,20 @@ Symbol_Assignment :: struct {
     file: string; 
     symbol: string;
     value: string;
+    documentation: string;
 }
 
 File_Includes :: struct {
     file: string;
     included_file: string;
-    exists: bool;
-}
-
-impulse_tracker_path :: (relative: string) -> string {
-    return join(global_root_dir, relative, separator="/");
 }
 
 main :: () {
     global_root_dir = join("H:", "impulsetracker", separator="/");
+
+    set_working_directory(global_root_dir);
+
+    load_tasm_file("IT_K.ASM");
 
     files := string.[
         "DEBUG.INC",
@@ -112,19 +118,19 @@ main :: () {
 
 
     for files {
-        load_tasm_file(impulse_tracker_path(it));
+        load_tasm_file(it);
     }
 
     print("Assignments:\n");
-    print("File,Symbol,Value\n");
+    print("File,Symbol,Value,Documentation\n");
     for global_symbol_assignments {
-        print("'%','%',%\n", it.file, it.symbol, it.value);
+        print("'%','%',%, '%'\n", it.file, it.symbol, it.value, it.documentation);
     }
 
     print("Includes:\n");
-    print("File,IncludedFile,Exists\n");
+    print("File,IncludedFile\n");
     for global_file_includes {
-        print("'%','%',%\n", it.file, it.included_file, ifx it.exists "1" else "0");
+        print("'%','%'\n", it.file, it.included_file);
     }
 }
 
@@ -132,21 +138,37 @@ load_tasm_file :: (path: string) {
     content := read_entire_file(path, zero_terminated = true);
     content.count += 1; // include the zero terminator
 
-    parser: *Tasm_Parser = New(Tasm_Parser);
-
     Data_Collector :: struct {
-        base: Tasm_Callbacks;
+        base: Tasm_Callbacks(Data_Collector);
 
         file: string;
     };
 
+    parser := New(Tasm_Parser(Data_Collector));
+
     init_tasm_parser(parser, content, *Data_Collector.{
         file = path,
 
-        base.on_include = (self_: *Tasm_Callbacks, filename: string, parser: Tasm_Parser) {
-            self := cast(*Data_Collector) self_;
+        base.on_error = (self: *Data_Collector, msg: string, state: Tasm_Parser_State) {
+            log("Error, file % encountered an error in context '%' at position %'", self.file, msg, state.pos);
 
-            path := impulse_tracker_path(filename);
+            pos := state.token.pos;
+            reverse_pos := pos;
+            while reverse_pos > 1 && state.content[reverse_pos - 1] != #char "\n" {
+                reverse_pos -= 1;
+            }
+            beginning_of_line := reverse_pos - 1;
+
+            end_of_line := pos + state.token.len;
+            while state.content[end_of_line] != #char "\0" && state.content[end_of_line] != #char "\r" && state.content[end_of_line] != #char "\n" {
+                end_of_line += 1;
+            }
+            end_of_good_range := state.token.pos;
+            log("Context: %*%", to_string(*state.content[beginning_of_line], end_of_good_range - beginning_of_line), to_string(*state.content[end_of_good_range], end_of_line - end_of_good_range));
+        },
+        
+        base.on_include = (self: *Data_Collector, filename: string, state: Tasm_Parser_State) {
+            path := filename;
 
             exists := file_exists(path);
             if !exists {
@@ -154,7 +176,7 @@ load_tasm_file :: (path: string) {
             }
 
             to_upper_in_place(filename);
-            array_add(*global_file_includes, .{self.file, filename, exists});
+            array_add(*global_file_includes, .{self.file, filename});
     
             // Is there a way to check whether that path corresponds to
             // the path of another file that I already am parsing?
@@ -164,31 +186,65 @@ load_tasm_file :: (path: string) {
             // files anyway.
         },
 
-        base.on_symbol_assignment = (self_: *Tasm_Callbacks, name: string, op: string, value: string, left: string, right: string, parser: Tasm_Parser) {
-            self := cast(*Data_Collector) self_;
+        base.on_symbol_assignment = (self: *Data_Collector, name: string, op: string, value: string, left: string, right: string, state: Tasm_Parser_State) {
             // It's interesting to list all symbols which are assigned, especially when they come from an include .INC file, as they may control important program behavior.
-            array_add(*global_symbol_assignments, .{self.file, name, value});
+            array_add(*global_symbol_assignments, .{self.file, name, value, right});
         },
-    }.base);
+
+/*
+// Debug
+        base.on_lexer_error_unexpected_character = (self: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State) {
+            log("error_unexpected_character: %: %", pos, to_string(*state.content[pos], 1));
+        },
+        base.on_lexer_whitespace = (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {
+            log("lexer_whitespace: % %", start_pos, end_pos);
+        },
+        base.on_lexer_string = (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {
+            log("lexer_string: % %", start_pos, end_pos);
+        },
+        base.on_lexer_comment = (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {
+            log("lexer_comment: % %", start_pos, end_pos);
+        },
+        base.on_lexer_newline = (self: *Tasm_Lexer_Callbacks, start: s64, state: Tasm_Parser_State) {
+            log("lexer_newline: %", start);
+        },
+        base.on_lexer_operator = (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {
+            log("lexer_operator: % %", start_pos, end_pos);
+        },
+        base.on_lexer_number = (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {
+            log("lexer_number: % %", start_pos, end_pos);
+        },
+        base.on_lexer_symbol = (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {
+            log("lexer_symbol: % %: %", start_pos, end_pos, to_string(*state.content[start_pos], end_pos - start_pos));
+        },
+*/
+    });
     
     parse_tasm(parser);
 }
     
-Tasm_Callbacks :: struct {
-    using base: Tasm_Lexer_Callbacks;
-
-    on_include := (self: *Tasm_Callbacks, filename: string, parser: Tasm_Parser) {};
-    on_symbol_assignment := (self: *Tasm_Callbacks, name: string, op: string, value: string, left: string, right: string, parser: Tasm_Parser) {};
+Tasm_Callbacks :: struct (T: Type) {
+    using base: Tasm_Lexer_Callbacks;   
+    
+    on_error := (self: *T, msg: string, state: Tasm_Parser_State) {};
+    on_include := (self: *T, filename: string, state: Tasm_Parser_State) {};
+    on_symbol_assignment := (self: *T, name: string, op: string, value: string, left: string, right: string, state: Tasm_Parser_State) {};
 }
 
-Tasm_Parser :: struct {
+Tasm_Parser_State :: struct {
     content: string;
     pos: s64;
-    callbacks: *Tasm_Callbacks;
-
     token: Tasm_Token;
-    token_callbacks: Token_Production_Lexer_Callbacks;
+}
 
+Tasm_Parser :: struct (T: Type) {
+    using base : Tasm_Parser_State;
+    
+    // All must be filled by the user:
+    callbacks: Tasm_Callbacks(T);
+    callbacks_data: *T;
+
+    token_callbacks: Token_Production_Lexer_Callbacks;
     lexer_callbacks: Composed_Lexer_Callbacks;
 }
 
@@ -198,6 +254,7 @@ Tasm_Token_Kind :: enum {
     Eof;
     Newline;
     Symbol;
+    String;
     Number;
     Operator;
 }
@@ -209,18 +266,20 @@ Tasm_Token :: struct {
 }
  
 Tasm_Lexer_Callbacks :: struct {
-    on_lexer_whitespace := (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, parser: Tasm_Parser) {};
-    on_lexer_comment := (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, parser: Tasm_Parser) {};
-    on_lexer_newline := (self: *Tasm_Lexer_Callbacks, start: s64, parser: Tasm_Parser) {};
-    on_lexer_operator := (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, parser: Tasm_Parser) {};
-    on_lexer_number := (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, parser: Tasm_Parser) {};
-    on_lexer_symbol := (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, parser: Tasm_Parser) {};
-    on_lexer_error_unexpected_character := (self: *Tasm_Lexer_Callbacks, pos: s64, parser: Tasm_Parser) {};
+    on_lexer_error_unexpected_character := (self: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State) {};
+
+    on_lexer_whitespace := (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {};
+    on_lexer_string := (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {};
+    on_lexer_comment := (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {};
+    on_lexer_newline := (self: *Tasm_Lexer_Callbacks, start: s64, state: Tasm_Parser_State) {};
+    on_lexer_operator := (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {};
+    on_lexer_number := (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {};
+    on_lexer_symbol := (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {};
 }
 
 Token_Production_Lexer_Callbacks :: struct {
     using base: Tasm_Lexer_Callbacks;
-    dest: *Tasm_Parser;
+    dest: *Tasm_Parser_State;
 }
 
 Composed_Lexer_Callbacks :: struct {
@@ -228,75 +287,87 @@ Composed_Lexer_Callbacks :: struct {
     a: *Tasm_Lexer_Callbacks;
     b: *Tasm_Lexer_Callbacks;
 
-    on_lexer_whitespace = (self_: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, parser: Tasm_Parser) {
+    on_lexer_error_unexpected_character = (self_: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State) {
         self := cast(*Composed_Lexer_Callbacks) self_;
-        self.a.on_lexer_whitespace(self.a, start_pos, end_pos, parser);
-        self.b.on_lexer_whitespace(self.b, start_pos, end_pos, parser);
+        self.a.on_lexer_error_unexpected_character(self.a, pos, state);
+        self.b.on_lexer_error_unexpected_character(self.b, pos, state);
     };
-    on_lexer_comment = (self_: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, parser: Tasm_Parser) {
+    on_lexer_whitespace = (self_: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {
         self := cast(*Composed_Lexer_Callbacks) self_;
-        self.a.on_lexer_comment(self.a, start_pos, end_pos, parser);
-        self.b.on_lexer_comment(self.b, start_pos, end_pos, parser);
+        self.a.on_lexer_whitespace(self.a, start_pos, end_pos, state);
+        self.b.on_lexer_whitespace(self.b, start_pos, end_pos, state);
     };
-    on_lexer_newline = (self_: *Tasm_Lexer_Callbacks, pos: s64, parser: Tasm_Parser) {
+    on_lexer_comment = (self_: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {
         self := cast(*Composed_Lexer_Callbacks) self_;
-        self.a.on_lexer_newline(self.a, pos, parser);
-        self.b.on_lexer_newline(self.b, pos, parser);
+        self.a.on_lexer_comment(self.a, start_pos, end_pos, state);
+        self.b.on_lexer_comment(self.b, start_pos, end_pos, state);
     };
-    on_lexer_operator = (self_: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, parser: Tasm_Parser) {
+    on_lexer_newline = (self_: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State) {
         self := cast(*Composed_Lexer_Callbacks) self_;
-        self.a.on_lexer_operator(self.a, start_pos, end_pos, parser);
-        self.b.on_lexer_operator(self.b, start_pos, end_pos, parser);
+        self.a.on_lexer_newline(self.a, pos, state);
+        self.b.on_lexer_newline(self.b, pos, state);
     };
-    on_lexer_number = (self_: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, parser: Tasm_Parser) {
+    on_lexer_operator = (self_: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {
         self := cast(*Composed_Lexer_Callbacks) self_;
-        self.a.on_lexer_number(self.a, start_pos, end_pos, parser);
-        self.b.on_lexer_number(self.b, start_pos, end_pos, parser);
+        self.a.on_lexer_operator(self.a, start_pos, end_pos, state);
+        self.b.on_lexer_operator(self.b, start_pos, end_pos, state);
     };
-    on_lexer_symbol = (self_: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, parser: Tasm_Parser) {
+    on_lexer_number = (self_: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {
         self := cast(*Composed_Lexer_Callbacks) self_;
-        self.a.on_lexer_symbol(self.a, start_pos, end_pos, parser);
-        self.b.on_lexer_symbol(self.b, start_pos, end_pos, parser);
+        self.a.on_lexer_number(self.a, start_pos, end_pos, state);
+        self.b.on_lexer_number(self.b, start_pos, end_pos, state);
     };
-    on_lexer_error_unexpected_character = (self_: *Tasm_Lexer_Callbacks, pos: s64, parser: Tasm_Parser) {
+    on_lexer_symbol = (self_: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {
         self := cast(*Composed_Lexer_Callbacks) self_;
-        self.a.on_lexer_error_unexpected_character(self.a, pos, parser);
-        self.b.on_lexer_error_unexpected_character(self.b, pos, parser);
+        self.a.on_lexer_symbol(self.a, start_pos, end_pos, state);
+        self.b.on_lexer_symbol(self.b, start_pos, end_pos, state);
+    };
+    on_lexer_string = (self_: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {
+        self := cast(*Composed_Lexer_Callbacks) self_;
+        self.a.on_lexer_string(self.a, start_pos, end_pos, state);
+        self.b.on_lexer_string(self.b, start_pos, end_pos, state);
     };
 }
 
-init_tasm_parser :: (parser: *Tasm_Parser, content: string, callbacks: *Tasm_Callbacks) {
+init_tasm_parser :: (parser: *Tasm_Parser($T), content: string, user_callbacks: *T) {
     parser.content = content;
-    parser.callbacks = callbacks;
+
+    parser.callbacks = user_callbacks.base;
+    parser.callbacks_data = user_callbacks;
+
     parser.token_callbacks = Token_Production_Lexer_Callbacks.{
-        on_lexer_whitespace = (self_: *Tasm_Lexer_Callbacks, f: s64, l: s64, parser: Tasm_Parser) { 
+        on_lexer_whitespace = (self_: *Tasm_Lexer_Callbacks, f: s64, l: s64, state: Tasm_Parser_State) { 
             self := cast(*Token_Production_Lexer_Callbacks) self_;
             self.dest.token = .{ kind = .None };
         },
-        on_lexer_newline = (self_: *Tasm_Lexer_Callbacks, pos: s64, parser: Tasm_Parser) {
+        on_lexer_string = (self_: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {
+            self := cast(*Token_Production_Lexer_Callbacks) self_;
+            self.dest.token = .{ kind = .String, pos = start_pos, len = end_pos - start_pos };
+        },
+        on_lexer_newline = (self_: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State) {
             self := cast(*Token_Production_Lexer_Callbacks) self_;
             self.dest.token = .{ kind = .Newline, pos = pos, len = 1 };
         },
-        on_lexer_comment = (self: *Tasm_Lexer_Callbacks, f: s64, l: s64, parser: Tasm_Parser) {
+        on_lexer_comment = (self: *Tasm_Lexer_Callbacks, f: s64, l: s64, state: Tasm_Parser_State) {
             (cast(*Token_Production_Lexer_Callbacks) self).dest.token = .{ kind = .None };
         },
-        on_lexer_operator = (self: *Tasm_Lexer_Callbacks, f: s64, l: s64, parser: Tasm_Parser) { 
+        on_lexer_operator = (self: *Tasm_Lexer_Callbacks, f: s64, l: s64, state: Tasm_Parser_State) { 
             (cast(*Token_Production_Lexer_Callbacks) self).dest.token = .{ kind = .Operator, pos = f, len = l - f }; 
         },
-        on_lexer_number = (self: *Tasm_Lexer_Callbacks, f: s64, l: s64, parser: Tasm_Parser) {
+        on_lexer_number = (self: *Tasm_Lexer_Callbacks, f: s64, l: s64, state: Tasm_Parser_State) {
             (cast(*Token_Production_Lexer_Callbacks) self).dest.token = .{ kind = .Number, pos = f, len = l - f }; 
         },
-        on_lexer_symbol = (self_: *Tasm_Lexer_Callbacks, f: s64, l: s64, parser: Tasm_Parser) { 
+        on_lexer_symbol = (self_: *Tasm_Lexer_Callbacks, f: s64, l: s64, state: Tasm_Parser_State) { 
             self := cast(*Token_Production_Lexer_Callbacks) self_;
             self.dest.token = .{ kind = .Symbol, pos = f, len = l - f }; 
         },
-        on_lexer_error_unexpected_character = (self_: *Tasm_Lexer_Callbacks, pos: s64, parser: Tasm_Parser) {
+        on_lexer_error_unexpected_character = (self_: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State) {
             self := cast(*Token_Production_Lexer_Callbacks) self_;
             self.dest.token = .{ kind = .Error, pos = pos };
         },
-        dest = parser,
+        dest = *parser.base,
     };
-    parser.token_callbacks.dest = parser;
+    parser.token_callbacks.dest = *parser.base;
     parser.lexer_callbacks = Composed_Lexer_Callbacks.{ 
         a = *parser.token_callbacks.base,
         b = *parser.callbacks.base,
@@ -326,6 +397,7 @@ parse_tasm :: (parser: *Tasm_Parser) {
         mark := parser_mark(parser);
         if parse_symbol_assignment(parser) {
         } else if parse_include(parser) {
+        } else if parse_procedure_decl(parser) {
         } else {
             // rollback and synchronize to the next newline
             parser_rollback(parser, mark);
@@ -366,7 +438,7 @@ parse_include :: (parser: *Tasm_Parser) -> success: bool {
         return false;
     }
 
-    parser.callbacks.on_include(parser.callbacks, filename, parser);
+    parser.callbacks.on_include(parser.callbacks_data, filename, parser.base);
 
     return true;
 }
@@ -398,38 +470,80 @@ parse_symbol_assignment :: (parser: *Tasm_Parser) -> success: bool {
             parser_rollback(parser, mark);
             return false;
         }
+        next_token(parser);
+
+        value: string;
+        if token.kind == .Number {
+            value = to_string(*parser.content[token.pos], token.len);
+        } else if token.kind == .Symbol {
+            value = to_string(*parser.content[token.pos], token.len);
+            // @todo, expressions
+        }
+        right_pos := parser.pos;
+        next_token(parser);
+
+        if token.kind != .Newline {  
+            parser.callbacks.on_error(parser.callbacks_data, "while parsing assignment, expected newline", parser.base);
+            parser_rollback(parser, mark);
+            return false; // error, garbage until the end of the line
+        }
+
+        parser.callbacks.on_symbol_assignment(parser.callbacks_data, symbol, op, value, "", to_string(*parser.content[right_pos], token.pos - right_pos), parser.base);
+        return true;
     } else if token.kind == .Operator {
         op = to_string(*parser.content[token.pos], token.len);
         if op != "=" {
             parser_rollback(parser, mark);
             return false;
         }
-    } else {
-        parser_rollback(parser, mark);
-        return false;
-    }
-    
-    next_token(parser);
-    if token.kind != .Number {
-        parser_rollback(parser, mark);
-        return false;
-    }
-    number := to_string(*parser.content[token.pos], token.len);
-    
-    start := pos;
-    next_token(parser);
-    if token.kind != .Newline {  
-        parser_rollback(parser, mark);
-        return false; // error, garbage until the end of the line
-    }
+        next_token(parser);
 
-    parser.callbacks.on_symbol_assignment(parser.callbacks, symbol, op, number, "", "", parser);
-    return true;
+        if token.kind != .Number {
+            // @todo missing, support for numeric expressions here. Like:
+            //
+            //   Offset = <Variable> + 43
+            //
+
+            parser.callbacks.on_error(parser.callbacks_data, "while parsing assignment, expected number", parser.base);
+            parser_rollback(parser, mark);
+            return false;
+        }
+        number := to_string(*parser.content[token.pos], token.len);
+        right_pos := parser.pos;
+        next_token(parser);
+    
+        if token.kind != .Newline {  
+            parser.callbacks.on_error(parser.callbacks_data, "while parsing assignment, expected newline", parser.base);
+            parser_rollback(parser, mark);
+            return false; // error, garbage until the end of the line
+        }
+    
+        parser.callbacks.on_symbol_assignment(parser.callbacks_data, symbol, op, number, "", to_string(*parser.content[right_pos], token.pos - right_pos), parser.base);
+        return true;
+
+    }
+    parser_rollback(parser, mark);
+    return false;
+}
+
+parse_procedure_decl :: (parser: *Tasm_Parser) -> found: bool {
+/*
+Ideal mode T310 syntax:
+
+PROC [[language modifier] language] name [distance] 
+[ARG argument_list] [RETqRNS item_list] 
+[LOCAL argument_list] 
+[USES item_list] 
+ENDP 
+*/
+// watch out that these could be nested!
+
+    return false;
 }
 
 next_token :: (parser: *Tasm_Parser) -> found: bool {
     while true {
-        if !tasm_lexer_next(parser, *parser.lexer_callbacks.base) { 
+        if !tasm_lexer_next(*parser.base, *parser.lexer_callbacks.base) { 
             parser.token.kind = .Eof;
             parser.token.pos = parser.pos;
             parser.token.len = 0;
@@ -442,7 +556,7 @@ next_token :: (parser: *Tasm_Parser) -> found: bool {
     return true;
 }
 
-tasm_lexer_next :: (parser: *Tasm_Parser, callbacks: *Tasm_Lexer_Callbacks) -> found: bool {
+tasm_lexer_next :: (parser: *Tasm_Parser_State, callbacks: *Tasm_Lexer_Callbacks) -> found: bool {
     c := parser.content[parser.pos];
     if c == {
         case #char "\0"; return false;
@@ -509,38 +623,111 @@ tasm_lexer_next :: (parser: *Tasm_Parser, callbacks: *Tasm_Lexer_Callbacks) -> f
         case #char "9";
             start := parser.pos;
             parser.pos += 1;
-            is_numeric_character :: (c: u8) -> bool {
-                return (#char "0" <= c && c <= #char "9");
+
+            // scan for the boundary and radix
+            end := parser.pos;
+
+            is_numeric_boundary :: (c: u8) -> bool {
+                return !(#char "0" <= c && c <= #char "9") &&
+                       !(#char "A" <= c && c <= #char "F") &&
+                       !(#char "a" <= c && c <= #char "f") &&
+                       !(#char "h" == c || c == #char "H") &&
+                       !(#char "b" == c || c == #char "B");
             }
             while true {
-                c := parser.content[parser.pos];
-                if !is_numeric_character(c) {
+                c := parser.content[end];
+                if is_numeric_boundary(c) {
                     break;
                 }
-                parser.pos += 1;
+                end += 1;
             }
+            radix := parser.content[end - 1];
+            if radix == #char "h" || radix == #char "H" {
+                is_numeric_character :: (c: u8) -> bool {
+                    return (#char "0" <= c && c <= #char "9") || 
+                           (#char "A" <= c && c <= #char "F") ||
+                           (#char "a" <= c && c <= #char "f");
+                }
+                while parser.pos < end - 1 {
+                    c := parser.content[parser.pos];
+                    if !is_numeric_character(c) {
+                        break;
+                    }
+                    parser.pos += 1;
+                }
+                if parser.pos != end - 1 {
+                    callbacks.on_lexer_error_unexpected_character(callbacks, parser.pos, parser);
+                }                           
+                parser.pos += 1;
+                callbacks.on_lexer_number(callbacks, start, end, parser);
+            } else if radix == #char "b" || radix == #char "B" {
+                is_numeric_character :: (c: u8) -> bool {
+                    return (#char "0" <= c && c <= #char "1");
+                }
+                while parser.pos < end - 1 {
+                    c := parser.content[parser.pos];
+                    if !is_numeric_character(c) {
+                        break;
+                    }
+                    parser.pos += 1;
+                }
+                if parser.pos != end - 1 {
+                    callbacks.on_lexer_error_unexpected_character(callbacks, parser.pos, parser);
+                }           
+                parser.pos += 1;
+                callbacks.on_lexer_number(callbacks, start, end, parser);
+                
+            } else {
+                is_numeric_character :: (c: u8) -> bool {
+                    return (#char "0" <= c && c <= #char "9");
+                }
+                while parser.pos < end {
+                    c := parser.content[parser.pos];
+                    if !is_numeric_character(c) {
+                        break;
+                    }
+                    parser.pos += 1;
+                }
             
-            if parser.content[parser.pos] == #char "h" {
-                // hex number
-                parser.pos += 1;
-            }
-            is_numeric_boundary :: (c: u8) -> bool {
-                return c == #char " " || c == #char "\r" || c == #char "\t" || c == #char "\n" || c == #char "\0";
-            }
-            if !is_numeric_boundary (parser.content[parser.pos]) {
-                callbacks.on_lexer_error_unexpected_character(callbacks, parser.pos, parser);
-            } else {            
-                callbacks.on_lexer_number(callbacks, start, parser.pos, parser);
+                if parser.pos != end {
+                    callbacks.on_lexer_error_unexpected_character(callbacks, parser.pos, parser);
+                } else {            
+                    callbacks.on_lexer_number(callbacks, start, parser.pos, parser);
+                }
             }
 
+        case #char ","; #through;
+        case #char "-"; #through;
+        case #char "+"; #through;
+        case #char ":"; #through;
         case #char "=";
             start := parser.pos;
             parser.pos += 1;
             callbacks.on_lexer_operator(callbacks, start, parser.pos, parser);
 
+        case #char "'"; #through;
+        case #char "\"";
+            start := parser.pos;
+            quote := parser.content[parser.pos];
+            parser.pos += 1;
+            while true {
+                c := parser.content[parser.pos];
+                if c == quote {
+                    if parser.content[parser.pos + 1] == quote {
+                        parser.pos += 2;
+                    } else {
+                        parser.pos += 1;
+                        break;
+                    }
+                } else {
+                    parser.pos += 1;
+                }
+            }
+            callbacks.on_lexer_string(callbacks, start, parser.pos, parser);
+
         case;
             is_keyword_character :: (c: u8) -> bool {
-                return (#char "A" <= c && c <= #char "Z") || (#char "a" <= c && c <= #char "z") || (#char "0" <= c && c <= #char "9") || c == #char "_" || c == #char ".";
+                return (#char "A" <= c && c <= #char "Z") || (#char "a" <= c && c <= #char "z") || (#char "0" <= c && c <= #char "9") || c == #char "_" || c == #char "." || c == #char "@";
             };
 
             if is_keyword_character(c) {
