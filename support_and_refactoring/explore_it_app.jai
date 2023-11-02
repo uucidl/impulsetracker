@@ -56,6 +56,7 @@ The guy who wrote protracker-clone and ft2-clone has a version of the replay cod
 global_root_dir: string;
 global_symbol_assignments: [..]Symbol_Assignment;
 global_file_includes: [..]File_Includes;
+global_proc_decls: [..]Proc_Decls;
 
 Symbol_Assignment :: struct {
     file: string; 
@@ -67,6 +68,13 @@ Symbol_Assignment :: struct {
 File_Includes :: struct {
     file: string;
     included_file: string;
+}
+
+Proc_Decls :: struct {
+    file: string;
+    proc_name: string;
+    proc_distance: string;
+    num_lines: s64;
 }
 
 main :: () {
@@ -132,6 +140,12 @@ main :: () {
     for global_file_includes {
         print("'%','%'\n", it.file, it.included_file);
     }
+
+    print("Procedure Declarations:\n");
+    print("File,ProcName,ProcDistance,NumLines\n");
+    for global_proc_decls {
+        print("'%','%','%', %\n", it.file, it.proc_name, it.proc_distance, it.num_lines);
+    }
 }
 
 load_tasm_file :: (path: string) {
@@ -191,6 +205,24 @@ load_tasm_file :: (path: string) {
             array_add(*global_symbol_assignments, .{self.file, name, value, right});
         },
 
+        base.on_procedure_decl = (self: *Data_Collector, name: string, distance: string, state: Tasm_Parser_State) {
+            array_add(*global_proc_decls, .{self.file, name, distance, 0});
+        },
+        
+        base.on_procedure_decl_end = (self: *Data_Collector, name: string, num_lines: s64, state: Tasm_Parser_State) {
+            ri := global_proc_decls.count;
+            while ri > 0 {
+                proc_decl := *global_proc_decls[ri - 1];
+                if proc_decl.proc_name == name {
+                    assert(proc_decl.num_lines == 0);
+                    proc_decl.num_lines = num_lines;
+                    return;
+                }
+                ri -= 1;
+            }
+            assert(false); // couldn't find a procedure by that name!
+        },
+
 /*
 // Debug
         base.on_lexer_error_unexpected_character = (self: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State) {
@@ -229,6 +261,8 @@ Tasm_Callbacks :: struct (T: Type) {
     on_error := (self: *T, msg: string, state: Tasm_Parser_State) {};
     on_include := (self: *T, filename: string, state: Tasm_Parser_State) {};
     on_symbol_assignment := (self: *T, name: string, op: string, value: string, left: string, right: string, state: Tasm_Parser_State) {};
+    on_procedure_decl := (self: *T, name: string, distance: string, state: Tasm_Parser_State) {};
+    on_procedure_decl_end := (self: *T, name: string, num_lines: s64, state: Tasm_Parser_State) {};
 }
 
 Tasm_Parser_State :: struct {
@@ -538,7 +572,81 @@ ENDP
 */
 // watch out that these could be nested!
 
-    return false;
+    using parser;
+
+    if token.kind != .Symbol {
+        return false;
+    }
+    keyword := to_string(*parser.content[token.pos], token.len);
+    if !equal_nocase(keyword, "PROC") {
+        return false;
+    }
+    next_token(parser);
+
+    mark := parser_mark(parser);
+
+    if token.kind != .Symbol {
+        parser.callbacks.on_error(parser.callbacks_data, "while parsing PROC decl, expected [[language modifier] language] name", parser.base);
+        return false;
+    }
+
+    // I'm guessing Impulse Tracker never uses language modifiers and language and we just have the name here.
+    name := to_string(*parser.content[token.pos], token.len);
+    next_token(parser);
+
+    distance := "implicit-distance";
+    if token.kind == .Symbol {
+        distance = to_string(*parser.content[token.pos], token.len);
+        next_token(parser);
+    }
+    
+    if token.kind != .Newline {
+        parser.callbacks.on_error(parser.callbacks_data, "while parsing PROC decl, expected newline after name [distance]", parser.base);
+        return false;
+    }
+
+    parser.callbacks.on_procedure_decl(parser.callbacks_data, name, distance, parser.base);
+
+    next_token(parser);
+
+    // let's eat all the lines.
+    num_lines := 0;
+    while true {
+        if parse_procedure_decl(parser) {
+        } else {
+            if token.kind == .Symbol {
+                keyword = to_string(*parser.content[token.pos], token.len);
+                if equal_nocase(keyword , "ENDP") {
+                    // we've reached the end of the procedure
+                    next_token(parser);
+                    if token.kind != .Symbol {
+                        parser.callbacks.on_error(parser.callbacks_data, "while parsing ENDP, expected function name", parser.base);
+                        return false;
+                    }
+                    if !equal_nocase(to_string(*parser.content[token.pos], token.len), name) {
+                        parser.callbacks.on_error(parser.callbacks_data, "while parsing ENDP, expected the same function name", parser.base);
+                        return false;
+                    }
+                    next_token(parser);
+
+                    if token.kind != .Newline {
+                        parser.callbacks.on_error(parser.callbacks_data, "while parsing PROC decl, expected newline after name [distance]", parser.base);
+                        return false;                        
+                    }
+                    parser.callbacks.on_procedure_decl_end(parser.callbacks_data, name, num_lines, parser.base);
+                    break;
+                }
+                next_token(parser);
+            }
+            while token.kind != .Newline {
+                next_token(parser); // ignore
+            }
+            next_token(parser);
+            num_lines += 1;
+        }
+    }
+        
+    return true;
 }
 
 next_token :: (parser: *Tasm_Parser) -> found: bool {
@@ -584,7 +692,9 @@ tasm_lexer_next :: (parser: *Tasm_Parser_State, callbacks: *Tasm_Lexer_Callbacks
             parser.pos += 1;
             c := parser.content[parser.pos];
             if c == #char "\n" {
-                callbacks.on_lexer_newline(callbacks, parser.pos, parser);
+                start = parser.pos;
+                parser.pos += 1;
+                callbacks.on_lexer_newline(callbacks, start, parser);
             } else {
                 callbacks.on_lexer_whitespace(callbacks, start, parser.pos, parser);
             }
