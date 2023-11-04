@@ -738,6 +738,7 @@ tasm_lexer_next :: (parser: *Tasm_Parser_State, callbacks: *Tasm_Lexer_Callbacks
                 parser.pos += 1;
             }
             callbacks.on_lexer_whitespace(callbacks, start, parser.pos, parser);
+            return true;
 
         case #char "\r";
             start := parser.pos;
@@ -747,14 +748,17 @@ tasm_lexer_next :: (parser: *Tasm_Parser_State, callbacks: *Tasm_Lexer_Callbacks
                 start = parser.pos;
                 parser.pos += 1;
                 callbacks.on_lexer_newline(callbacks, start, parser);
+                return true;
             } else {
                 callbacks.on_lexer_whitespace(callbacks, start, parser.pos, parser);
+                return true;
             }
 
         case #char "\n"; {
             start := parser.pos;
             parser.pos += 1;
             callbacks.on_lexer_newline(callbacks, start, parser);
+            return true;
         }
 
         case #char ";"; // A line comment is starting here.
@@ -772,6 +776,7 @@ tasm_lexer_next :: (parser: *Tasm_Parser_State, callbacks: *Tasm_Lexer_Callbacks
                 }
             }
             callbacks.on_lexer_comment(callbacks, start, end, parser);
+            return true;
 
         case #char "0"; #through;
         case #char "1"; #through;
@@ -838,6 +843,7 @@ tasm_lexer_next :: (parser: *Tasm_Parser_State, callbacks: *Tasm_Lexer_Callbacks
                 }           
                 parser.pos += 1;
                 callbacks.on_lexer_number(callbacks, start, end, parser);
+                return true;
                 
             } else {
                 is_numeric_character :: (c: u8) -> bool {
@@ -853,8 +859,10 @@ tasm_lexer_next :: (parser: *Tasm_Parser_State, callbacks: *Tasm_Lexer_Callbacks
             
                 if parser.pos != end {
                     callbacks.on_lexer_error_unexpected_character(callbacks, parser.pos, parser);
+                    return true;
                 } else {            
                     callbacks.on_lexer_number(callbacks, start, parser.pos, parser);
+                    return true;
                 }
             }
 
@@ -870,26 +878,31 @@ tasm_lexer_next :: (parser: *Tasm_Parser_State, callbacks: *Tasm_Lexer_Callbacks
             start := parser.pos;
             parser.pos += 1;
             callbacks.on_lexer_operator(callbacks, start, parser.pos, parser);
+            return true;
 
         case #char "(";
             start := parser.pos;
             parser.pos += 1;
             callbacks.on_lexer_paren_open(callbacks, start, parser);
+            return true;
 
         case #char ")";
             start := parser.pos;
             parser.pos += 1;
             callbacks.on_lexer_paren_close(callbacks, start, parser);
+            return true;
 
         case #char "[";
             start := parser.pos;
             parser.pos += 1;
             callbacks.on_lexer_bracket_open(callbacks, start, parser);
+            return true;
 
         case #char "]";
             start := parser.pos;
             parser.pos += 1;
             callbacks.on_lexer_bracket_close(callbacks, start, parser);
+            return true;
 
         case #char "'"; #through;
         case #char "\"";
@@ -910,27 +923,78 @@ tasm_lexer_next :: (parser: *Tasm_Parser_State, callbacks: *Tasm_Lexer_Callbacks
                 }
             }
             callbacks.on_lexer_string(callbacks, start, parser.pos, parser);
+            return true;
 
-        case;
-            is_keyword_character :: (c: u8) -> bool {
-                return (#char "A" <= c && c <= #char "Z") || (#char "a" <= c && c <= #char "z") || (#char "0" <= c && c <= #char "9") || c == #char "_" || c == #char "." || c == #char "@";
-            };
+        // multiline COMMENT initial:
+        case #char "c"; #through;
+        case #char "C";
+            is_printable_character :: (c: u8) -> bool {
+                return 0x21 <= c && c <= 0x7e;
+            }
 
-            if is_keyword_character(c) {
-                start := parser.pos;
-                parser.pos += 1;
+            start := parser.pos;
+            i := 1;
+            while true {
+                c := parser.content[start + i];
+                if !c {
+                    break;
+                }
+                if !is_printable_character(c) {
+                    break;
+                }
+                i += 1;
+            }
+            if equal_nocase("COMMENT", to_string(*parser.content[start], i)) {
                 while true {
-                    c := parser.content[parser.pos];
-                    if !is_keyword_character(c) {
+                    c := parser.content[start + i];
+                    if c != #char " " && c != #char "\t" {
                         break;
                     }
-                    parser.pos += 1;
+                    i += 1;
                 }
-                callbacks.on_lexer_symbol(callbacks, start, parser.pos, parser);                    
-            } else {
-                callbacks.on_lexer_error_unexpected_character(callbacks, parser.pos, parser);
-                parser.pos += 1;
+                c := parser.content[start + i];
+                i += 1;
+
+                if is_printable_character(c) {
+                     comment_delimiter := c;
+                
+                    while true {
+                        c := parser.content[start + i];
+                        if !c {
+                            callbacks.on_lexer_error_unexpected_character(callbacks, start, parser);
+                            return false;
+                        }
+                        if c == comment_delimiter {
+                            break;
+                        }
+                        i += 1;
+                    }
+                    parser.pos = start + i + 1;
+                    end := parser.pos;
+                    callbacks.on_lexer_comment(callbacks, start, end, parser);
+                    return true;
+                }
             }
+    }
+
+    is_keyword_character :: (c: u8) -> bool {
+        return (#char "A" <= c && c <= #char "Z") || (#char "a" <= c && c <= #char "z") || (#char "0" <= c && c <= #char "9") || c == #char "_" || c == #char "." || c == #char "@";
+    };
+
+    if is_keyword_character(c) {
+        start := parser.pos;
+        parser.pos += 1;
+        while true {
+            c := parser.content[parser.pos];
+            if !is_keyword_character(c) {
+                break;
+            }
+            parser.pos += 1;
+        }
+        callbacks.on_lexer_symbol(callbacks, start, parser.pos, parser);                    
+    } else {
+        callbacks.on_lexer_error_unexpected_character(callbacks, parser.pos, parser);
+        parser.pos += 1;
     }
 
     return true;
