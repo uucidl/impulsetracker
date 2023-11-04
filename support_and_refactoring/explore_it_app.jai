@@ -243,6 +243,18 @@ load_tasm_file :: (path: string) {
         base.on_lexer_operator = (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {
             log("lexer_operator: % %", start_pos, end_pos);
         },
+        base.on_lexer_paren_open = (self: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State) {
+            log("lexer_paren_open %", pos);
+        },
+        base.on_lexer_paren_close = (self: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State)  {
+            log("lexer_paren_close %", pos);
+        },
+        base.on_lexer_bracket_open = (self: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State)  {
+            log("lexer_bracket_open %", pos);
+        },
+        base.on_lexer_bracket_close = (self: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State)  {
+            log("lexer_bracket_close %", pos);
+        },
         base.on_lexer_number = (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {
             log("lexer_number: % %", start_pos, end_pos);
         },
@@ -291,6 +303,10 @@ Tasm_Token_Kind :: enum {
     String;
     Number;
     Operator;
+    ParenOpen;
+    ParenClose;
+    BracketOpen;
+    BracketClose;
 }
 
 Tasm_Token :: struct {
@@ -306,7 +322,12 @@ Tasm_Lexer_Callbacks :: struct {
     on_lexer_string := (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {};
     on_lexer_comment := (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {};
     on_lexer_newline := (self: *Tasm_Lexer_Callbacks, start: s64, state: Tasm_Parser_State) {};
-    on_lexer_operator := (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {};
+    on_lexer_operator := (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {}
+    ;
+    on_lexer_paren_open := (self: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State) {}
+    on_lexer_paren_close := (self: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State) {}
+    on_lexer_bracket_open := (self: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State) {}
+    on_lexer_bracket_close := (self: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State) {}
     on_lexer_number := (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {};
     on_lexer_symbol := (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {};
 }
@@ -345,6 +366,26 @@ Composed_Lexer_Callbacks :: struct {
         self := cast(*Composed_Lexer_Callbacks) self_;
         self.a.on_lexer_operator(self.a, start_pos, end_pos, state);
         self.b.on_lexer_operator(self.b, start_pos, end_pos, state);
+    };
+    on_lexer_paren_open = (self_: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State) {
+        self := cast(*Composed_Lexer_Callbacks) self_;
+        self.a.on_lexer_paren_open(self.a, pos, state);
+        self.b.on_lexer_paren_open(self.b, pos, state);
+    };
+    on_lexer_paren_close = (self_: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State) {
+        self := cast(*Composed_Lexer_Callbacks) self_;
+        self.a.on_lexer_paren_close(self.a, pos, state);
+        self.b.on_lexer_paren_close(self.b, pos, state);
+    };
+    on_lexer_bracket_open = (self_: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State) {
+        self := cast(*Composed_Lexer_Callbacks) self_;
+        self.a.on_lexer_bracket_open(self.a, pos, state);
+        self.b.on_lexer_bracket_open(self.b, pos, state);
+    };
+    on_lexer_bracket_close = (self_: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State) {
+        self := cast(*Composed_Lexer_Callbacks) self_;
+        self.a.on_lexer_bracket_close(self.a, pos, state);
+        self.b.on_lexer_bracket_close(self.b, pos, state);
     };
     on_lexer_number = (self_: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {
         self := cast(*Composed_Lexer_Callbacks) self_;
@@ -388,7 +429,18 @@ init_tasm_parser :: (parser: *Tasm_Parser($T), content: string, user_callbacks: 
         on_lexer_operator = (self: *Tasm_Lexer_Callbacks, f: s64, l: s64, state: Tasm_Parser_State) { 
             (cast(*Token_Production_Lexer_Callbacks) self).dest.token = .{ kind = .Operator, pos = f, len = l - f }; 
         },
-        on_lexer_number = (self: *Tasm_Lexer_Callbacks, f: s64, l: s64, state: Tasm_Parser_State) {
+        on_lexer_paren_open = (self: *Tasm_Lexer_Callbacks, p: s64, state: Tasm_Parser_State) {
+            (cast(*Token_Production_Lexer_Callbacks) self).dest.token = .{ kind = .ParenOpen, pos = p, len = 1 }; 
+        },
+        on_lexer_paren_close = (self: *Tasm_Lexer_Callbacks, p: s64, state: Tasm_Parser_State) {
+            (cast(*Token_Production_Lexer_Callbacks) self).dest.token = .{ kind = .ParenClose, pos = p, len = 1 }; 
+        },
+        on_lexer_bracket_open = (self: *Tasm_Lexer_Callbacks, p: s64, state: Tasm_Parser_State) {
+            (cast(*Token_Production_Lexer_Callbacks) self).dest.token = .{ kind = .BracketOpen, pos = p, len = 1 }; 
+        },
+        on_lexer_bracket_close = (self: *Tasm_Lexer_Callbacks, p: s64, state: Tasm_Parser_State) {
+            (cast(*Token_Production_Lexer_Callbacks) self).dest.token = .{ kind = .BracketClose, pos = p, len = 1 }; 
+        },        on_lexer_number = (self: *Tasm_Lexer_Callbacks, f: s64, l: s64, state: Tasm_Parser_State) {
             (cast(*Token_Production_Lexer_Callbacks) self).dest.token = .{ kind = .Number, pos = f, len = l - f }; 
         },
         on_lexer_symbol = (self_: *Tasm_Lexer_Callbacks, f: s64, l: s64, state: Tasm_Parser_State) { 
@@ -810,10 +862,34 @@ tasm_lexer_next :: (parser: *Tasm_Parser_State, callbacks: *Tasm_Lexer_Callbacks
         case #char "-"; #through;
         case #char "+"; #through;
         case #char ":"; #through;
+        case #char "?"; #through;
+        case #char "*"; #through;
+        case #char "/"; #through;
+        case #char "$"; #through;
         case #char "=";
             start := parser.pos;
             parser.pos += 1;
             callbacks.on_lexer_operator(callbacks, start, parser.pos, parser);
+
+        case #char "(";
+            start := parser.pos;
+            parser.pos += 1;
+            callbacks.on_lexer_paren_open(callbacks, start, parser);
+
+        case #char ")";
+            start := parser.pos;
+            parser.pos += 1;
+            callbacks.on_lexer_paren_close(callbacks, start, parser);
+
+        case #char "[";
+            start := parser.pos;
+            parser.pos += 1;
+            callbacks.on_lexer_bracket_open(callbacks, start, parser);
+
+        case #char "]";
+            start := parser.pos;
+            parser.pos += 1;
+            callbacks.on_lexer_bracket_close(callbacks, start, parser);
 
         case #char "'"; #through;
         case #char "\"";
