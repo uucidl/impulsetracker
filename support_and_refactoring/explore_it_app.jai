@@ -53,10 +53,13 @@ The guy who wrote protracker-clone and ft2-clone has a version of the replay cod
 #import "File_Utilities";
 #import "String";
 
-global_root_dir: string;
-global_symbol_assignments: [..]Symbol_Assignment;
-global_file_includes: [..]File_Includes;
-global_proc_decls: [..]Proc_Decls;
+globals: struct {
+    root_dir: string;
+    symbol_assignments: [..]Symbol_Assignment;
+    file_includes: [..]File_Includes;
+    proc_decls: [..]Proc_Decls;
+    syscalls: [..]Syscalls;
+}
 
 Symbol_Assignment :: struct {
     file: string; 
@@ -75,14 +78,19 @@ Proc_Decls :: struct {
     proc_name: string;
     proc_distance: string;
     num_lines: s64;
+    depth: s64;
+    num_calls: s64;
+    num_syscalls: s64;
+}
+
+Syscalls :: struct {
+    interrupt_number: string;
 }
 
 main :: () {
-    global_root_dir = join("H:", "impulsetracker", separator="/");
+    globals.root_dir = join("H:", "impulsetracker", separator="/");
 
-    set_working_directory(global_root_dir);
-
-    load_tasm_file("IT_K.ASM");
+    set_working_directory(globals.root_dir);
 
     files := string.[
         "DEBUG.INC",
@@ -131,20 +139,26 @@ main :: () {
 
     print("Assignments:\n");
     print("File,Symbol,Value,Documentation\n");
-    for global_symbol_assignments {
+    for globals.symbol_assignments {
         print("'%','%',%, '%'\n", it.file, it.symbol, it.value, it.documentation);
     }
 
     print("Includes:\n");
     print("File,IncludedFile\n");
-    for global_file_includes {
+    for globals.file_includes {
         print("'%','%'\n", it.file, it.included_file);
     }
 
     print("Procedure Declarations:\n");
-    print("File,ProcName,ProcDistance,NumLines\n");
-    for global_proc_decls {
-        print("'%','%','%', %\n", it.file, it.proc_name, it.proc_distance, it.num_lines);
+    print("File,ProcName,ProcDistance,NumLines,Depth,NumCalls,NumSyscalls\n");
+    for globals.proc_decls {
+        print("'%','%','%', %, %, %, %\n", it.file, it.proc_name, it.proc_distance, it.num_lines, it.depth, it.num_calls, it.num_syscalls);
+    }
+
+    print("Syscalls:\n");
+    print("InterruptNumber\n");
+    for globals.syscalls {
+        print("%\n", it.interrupt_number);
     }
 }
 
@@ -156,6 +170,7 @@ load_tasm_file :: (path: string) {
         base: Tasm_Callbacks(Data_Collector);
 
         file: string;
+        procedure_depth: s64 = 0;
     };
 
     parser := New(Tasm_Parser(Data_Collector));
@@ -190,7 +205,7 @@ load_tasm_file :: (path: string) {
             }
 
             to_upper_in_place(filename);
-            array_add(*global_file_includes, .{self.file, filename});
+            array_add(*globals.file_includes, .{self.file, filename});
     
             // Is there a way to check whether that path corresponds to
             // the path of another file that I already am parsing?
@@ -202,19 +217,22 @@ load_tasm_file :: (path: string) {
 
         base.on_symbol_assignment = (self: *Data_Collector, name: string, op: string, value: string, left: string, right: string, state: Tasm_Parser_State) {
             // It's interesting to list all symbols which are assigned, especially when they come from an include .INC file, as they may control important program behavior.
-            array_add(*global_symbol_assignments, .{self.file, name, value, right});
+            array_add(*globals.symbol_assignments, .{self.file, name, value, right});
         },
 
         base.on_procedure_decl = (self: *Data_Collector, name: string, distance: string, state: Tasm_Parser_State) {
-            array_add(*global_proc_decls, .{self.file, name, distance, 0});
+            array_add(*globals.proc_decls, .{self.file, name, distance, 0, self.procedure_depth, 0, 0});
+            self.procedure_depth += 1;
         },
         
         base.on_procedure_decl_end = (self: *Data_Collector, name: string, num_lines: s64, state: Tasm_Parser_State) {
-            ri := global_proc_decls.count;
+            self.procedure_depth -= 1;
+            ri := globals.proc_decls.count;
             while ri > 0 {
-                proc_decl := *global_proc_decls[ri - 1];
+                proc_decl := *globals.proc_decls[ri - 1];
                 if proc_decl.proc_name == name {
                     assert(proc_decl.num_lines == 0);
+                    assert(proc_decl.depth == self.procedure_depth);
                     proc_decl.num_lines = num_lines;
                     return;
                 }
@@ -222,12 +240,47 @@ load_tasm_file :: (path: string) {
             }
             assert(false); // couldn't find a procedure by that name!
         },
-
-/*
+        base.on_call_to_symbol = (self: *Data_Collector, called_label: string, distance: string, state: Tasm_Parser_State) {
+            ri := globals.proc_decls.count;
+            while ri > 0 {
+                proc_decl := *globals.proc_decls[ri - 1];
+                if proc_decl.depth == self.procedure_depth - 1 {
+                    //log("proc % is calling proc %", proc_decl.proc_name, called_label);
+                    proc_decl.num_calls += 1;
+                    return;
+                }
+            }
+            assert(false);
+        },
+        base.on_int = (self: *Data_Collector, called_interrupt: string, state: Tasm_Parser_State) {
+            // register this particular interrupt
+            found_interrupt := false;
+            for globals.syscalls {
+                if equal(it.interrupt_number, called_interrupt) {
+                    found_interrupt = true;
+                }
+            }
+            if !found_interrupt {
+                array_add(*globals.syscalls, .{called_interrupt});
+            }
+            
+            // register that this function makes this call
+            ri := globals.proc_decls.count;
+            while ri > 0 {
+                proc_decl := *globals.proc_decls[ri - 1];
+                if proc_decl.depth == self.procedure_depth - 1 {
+                    // log("proc % is calling interrupt %", proc_decl.proc_name, called_interrupt);
+                    proc_decl.num_syscalls += 1;
+                    return;
+                }
+            }
+            assert(false);
+        },
 // Debug
         base.on_lexer_error_unexpected_character = (self: *Tasm_Lexer_Callbacks, pos: s64, state: Tasm_Parser_State) {
             log("error_unexpected_character: %: %", pos, to_string(*state.content[pos], 1));
         },
+/*
         base.on_lexer_whitespace = (self: *Tasm_Lexer_Callbacks, start_pos: s64, end_pos: s64, state: Tasm_Parser_State) {
             log("lexer_whitespace: % %", start_pos, end_pos);
         },
@@ -275,6 +328,9 @@ Tasm_Callbacks :: struct (T: Type) {
     on_symbol_assignment := (self: *T, name: string, op: string, value: string, left: string, right: string, state: Tasm_Parser_State) {};
     on_procedure_decl := (self: *T, name: string, distance: string, state: Tasm_Parser_State) {};
     on_procedure_decl_end := (self: *T, name: string, num_lines: s64, state: Tasm_Parser_State) {};
+    on_label := (self: *T, name: string, state: Tasm_Parser_State) {};
+    on_call_to_symbol := (self: *T, called_label: string, distance: string, state: Tasm_Parser_State) {};
+    on_int := (self: *T, called_interrupt: string, state: Tasm_Parser_State) {};
 }
 
 Tasm_Parser_State :: struct {
@@ -661,11 +717,24 @@ ENDP
 
     next_token(parser);
 
+    // @todo
+    // Data allocation directive, p159
+    // - [name] directive dup_expr [,dup_expr ... ] 
+    // with dup_expr:
+    //
+    // The syntax of each dup _expr can be one of the following: 
+    // • ?
+    // • value 
+    // • count_expression DUP ( dup_expr [ , dup_expr ... ] ) 
+
     // let's eat all the lines.
     num_lines := 0;
     while true {
         if parse_procedure_decl(parser) {
         } else {
+            while token.kind == .Newline {
+                next_token(parser);
+            }
             if token.kind == .Symbol {
                 keyword = to_string(*parser.content[token.pos], token.len);
                 if equal_nocase(keyword , "ENDP") {
@@ -687,9 +756,17 @@ ENDP
                     }
                     parser.callbacks.on_procedure_decl_end(parser.callbacks_data, name, num_lines, parser.base);
                     break;
-                }
-                next_token(parser);
+                } else {
+                    if parse_label(keyword, parser) {
+                    } else if parse_instruction(keyword, parser) {
+                    } else {
+                        parser.callbacks.on_error(parser.callbacks_data, "unexpected content starting with symbol in PROC decl", parser.base);
+                    }
+                }                
+            } else {
+                parser.callbacks.on_error(parser.callbacks_data, "unexpected content in PROC decl", parser.base);
             }
+
             while token.kind != .Newline {
                 next_token(parser); // ignore
             }
@@ -699,6 +776,94 @@ ENDP
     }
         
     return true;
+}
+
+// where initial is the first symbol in the line, that was just parsed.
+parse_label :: (initial: string, parser: *Tasm_Parser) -> found:bool {
+    using parser;
+
+    mark := parser_mark(parser);
+    next_token(parser);
+    if token.kind != .Operator { 
+        parser_rollback(parser, mark);
+        return false;
+    }
+    op := to_string(*parser.content[token.pos], token.len);
+    if !equal(op, ":") {
+        parser.callbacks.on_error(parser.callbacks_data, "unexpected operator after symbol when parsing label", parser.base);
+        return false;
+    }
+
+    label := initial;
+    next_token(parser);
+
+    if token.kind != .Newline {
+        parser.callbacks.on_error(parser.callbacks_data, "while parsing label, expected newline", parser.base);
+        return false;
+    }
+    
+    parser.callbacks.on_label(parser.callbacks_data, label, parser.base);
+    return true;
+}
+
+// where initial is the first symbol in the line, that was just parsed.
+parse_instruction :: (initial: string, parser: *Tasm_Parser) -> found:bool {
+    using parser;
+
+    if equal_nocase(initial, "call") {
+        next_token(parser);
+        if token.kind != .Symbol {
+            parser.callbacks.on_error(parser.callbacks_data, "while parsing call, expected symbol", parser.base);
+            return true;
+        } else {
+            called_label := to_string(*parser.content[token.pos], token.len);
+            next_token(parser);
+            if token.kind != .Newline {
+                parser.callbacks.on_error(parser.callbacks_data, "while parsing call, expected newline", parser.base);
+            } else {
+                parser.callbacks.on_call_to_symbol(parser.callbacks_data, called_label, "", parser.base);
+            }
+            return true;
+        }
+    } else if equal_nocase(initial, "int") {
+        next_token(parser);
+        if token.kind != .Number {
+            parser.callbacks.on_error(parser.callbacks_data, "while parsing int, expected number", parser.base);
+            return true;
+        } else {
+            called_interrupt := to_string(*parser.content[token.pos], token.len);
+            next_token(parser);
+            if token.kind != .Newline {
+                parser.callbacks.on_error(parser.callbacks_data, "while parsing int, expected newline", parser.base);
+            } else {
+                parser.callbacks.on_int(parser.callbacks_data, called_interrupt, parser.base);
+            }
+            return true;
+        }
+    } else if equal_nocase(initial, "pusha") {
+        next_token(parser);
+        if token.kind != .Newline {
+            callbacks.on_error(callbacks_data, "while parsing pusha, expected newline", parser.base);
+            return true;
+        }
+        // @todo
+        return true;
+    } else if equal_nocase(initial, "push") {
+        next_token(parser);
+        if token.kind != .Symbol {
+            callbacks.on_error(callbacks_data, "while parsing push, expected symbol for register", parser.base);
+            return true;
+        }
+        next_token(parser);
+        if token.kind != .Newline {
+            callbacks.on_error(callbacks_data, "while parsing push, expected newline", parser.base);
+            return true;
+        }
+        // @todo
+        return true;
+    }
+
+    return false;
 }
 
 next_token :: (parser: *Tasm_Parser) -> found: bool {
@@ -827,6 +992,7 @@ tasm_lexer_next :: (parser: *Tasm_Parser_State, callbacks: *Tasm_Lexer_Callbacks
                 }                           
                 parser.pos += 1;
                 callbacks.on_lexer_number(callbacks, start, end, parser);
+                return true;
             } else if radix == #char "b" || radix == #char "B" {
                 is_numeric_character :: (c: u8) -> bool {
                     return (#char "0" <= c && c <= #char "1");
@@ -978,7 +1144,7 @@ tasm_lexer_next :: (parser: *Tasm_Parser_State, callbacks: *Tasm_Lexer_Callbacks
     }
 
     is_keyword_character :: (c: u8) -> bool {
-        return (#char "A" <= c && c <= #char "Z") || (#char "a" <= c && c <= #char "z") || (#char "0" <= c && c <= #char "9") || c == #char "_" || c == #char "." || c == #char "@";
+        return (#char "A" <= c && c <= #char "Z") || (#char "a" <= c && c <= #char "z") || (#char "0" <= c && c <= #char "9") || c == #char "_" || c == #char "." || c == #char "@" || c == #char "&";
     };
 
     if is_keyword_character(c) {
